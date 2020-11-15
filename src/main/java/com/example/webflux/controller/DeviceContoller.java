@@ -5,12 +5,16 @@ import com.example.webflux.repository.DeviceRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.cache.CacheMono;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.ParallelFlux;
+import reactor.core.publisher.Signal;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
@@ -27,6 +31,9 @@ public class DeviceContoller {
     @Qualifier("server1")
     WebClient webClient;
 
+    @Autowired
+    CacheManager cacheManager;
+
     @GetMapping()
     public Flux<Device> getDevices() {
         return deviceRepo.findAll();
@@ -34,17 +41,34 @@ public class DeviceContoller {
 
     @GetMapping("/{id}")
     public Mono<Device> getDeviceById(@PathVariable("id") Long id) {
-        Mono<Device> device = deviceRepo.findById(id);
-        return device;
+        Cache cache = cacheManager.getCache("devices");
+        return CacheMono.lookup(key -> {
+            //return Mono.<Signal<Device>>justOrEmpty((Signal) cacheManager.getCache("devices").get(key).get());
+            Device d = cache.get(key, Device.class);
+            return Mono.justOrEmpty(d).map(Signal::next);
+        }, id)
+                .onCacheMissResume(Mono.defer(() -> deviceRepo.findById(id)))
+                .andWriteWith((k, signal) -> Mono.fromRunnable(() -> {
+                    if (!signal.isOnError()) {
+                        cache.put(k, signal.get());
+                    }
+                }));
+    }
+
+    @DeleteMapping("/{id}")
+    public void deleteDevice(@PathVariable("id") Long id) {
+        Cache cache = cacheManager.getCache("devices");
+        cache.evictIfPresent(id);
+        deviceRepo.deleteById(id);
     }
 
     @GetMapping("/multi")
     public Flux<Device> getDevice() {
         return Flux
-            .range(1, 100)
-            .flatMap(i -> {
-                return getDeviceFromThirdParty(Long.valueOf(i));
-            }).subscribeOn(Schedulers.parallel());
+                .range(1, 100)
+                .flatMap(i -> {
+                    return getDeviceFromThirdParty(Long.valueOf(i));
+                }).subscribeOn(Schedulers.parallel());
     }
 
     private Mono<Device> getDeviceFromThirdParty(Long id) {
@@ -78,12 +102,10 @@ public class DeviceContoller {
     @PostMapping(consumes = "application/json")
     @ResponseStatus(HttpStatus.CREATED)
     public Mono<Device> createDevice(@RequestBody Mono<Device> device) {
-        return device.flatMap(i -> deviceRepo.save(i));
-    }
+        return device.flatMap(i -> {
 
-    @DeleteMapping("/{id}")
-    public void deleteDevice(@PathVariable("id") Long id) {
-        deviceRepo.deleteById(id);
+            return deviceRepo.save(i);
+        });
     }
 
 }

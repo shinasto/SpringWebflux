@@ -1,7 +1,8 @@
 server:
   port: 8080
-spring:
-  h2:
-    console:
-      settings:
-        trace: true
+logging:
+  level:
+    org:
+      springframework:
+        data:
+          r2dbc=DEBUG:
